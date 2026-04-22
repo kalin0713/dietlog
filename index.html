@@ -571,24 +571,41 @@ function addFoodManual(){
 }
 // ===== GEMINI HELPER =====
 function getApiKey(){ return localStorage.getItem('dl_apikey')||''; }
-async function callGemini(systemPrompt, userMsg, maxTokens){
+async function callGemini(systemPrompt, userMsg, maxTokens, wantJson){
   const key = getApiKey();
   if(!key) throw new Error('NO_KEY');
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key='+encodeURIComponent(key);
-  const resp = await fetch(url,{
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({
-      systemInstruction:{ parts:[{ text:systemPrompt }] },
-      contents:[{ role:'user', parts:[{ text:userMsg }] }],
-      generationConfig:{ maxOutputTokens:maxTokens||1000, temperature:0.3 }
-    })
-  });
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key='+encodeURIComponent(key);
+  const cfg = { maxOutputTokens:maxTokens||1000, temperature:0.3 };
+  if(wantJson) cfg.responseMimeType = 'application/json';
+  let resp;
+  try {
+    resp = await fetch(url,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        systemInstruction:{ parts:[{ text:systemPrompt }] },
+        contents:[{ role:'user', parts:[{ text:userMsg }] }],
+        generationConfig:cfg
+      })
+    });
+  } catch(netErr){
+    throw new Error('網路連線失敗');
+  }
   if(!resp.ok){
-    const err = await resp.text();
-    throw new Error('API_ERR: '+resp.status+' '+err.slice(0,200));
+    let detail = '';
+    try {
+      const errData = await resp.json();
+      detail = errData.error?.message || '';
+    } catch(e){}
+    if(resp.status===400) throw new Error('API Key 格式錯誤');
+    if(resp.status===403) throw new Error('API Key 無效或權限不足');
+    if(resp.status===429) throw new Error('今日用量超過或頻率過高');
+    if(resp.status===404) throw new Error('模型不存在（請回報）');
+    throw new Error('API 錯誤 '+resp.status+(detail?'：'+detail.slice(0,80):''));
   }
   const data = await resp.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text||'';
+  const txt = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if(!txt) throw new Error('AI 無回應（可能被安全過濾）');
+  return txt;
 }
 // ===== AI FOOD =====
 async function analyzeFood(){
@@ -607,7 +624,7 @@ async function analyzeFood(){
       `你是專業營養分析師。用戶描述吃的食物，估算熱量和巨量營養素。
 拳頭換算：1拳頭肉≈110g蛋白25g，1拳頭白飯≈110g碳水38g，1拳頭蔬菜≈100g，1拳頭水果≈100g。
 只回傳JSON無多餘文字無markdown：{"items":[{"name":"名稱","kcal":數字,"protein":數字,"carb":數字,"fat":數字,"unit":"份量描述"}],"total":{"kcal":數字,"protein":數字,"carb":數字,"fat":數字}}`,
-      '分析：'+text, 1200);
+      '分析：'+text, 1200, true);
     const parsed = JSON.parse(raw.replace(/```json|```/g,'').trim());
     pendingFood = { parsed, text };
     let html = '<div style="margin-bottom:8px">';
@@ -625,7 +642,8 @@ async function analyzeFood(){
     btn.disabled = false;
     btn.onclick = confirmFood;
   } catch(e){
-    resC.innerHTML = '<span style="color:var(--accent3)">分析失敗，請重試</span>';
+    const msg = e.message==='NO_KEY'?'請先到設定填入 API Key':(e.message.startsWith('API')||e.message.includes('Key')||e.message.includes('網路')||e.message.includes('用量')||e.message.includes('AI')?e.message:'解析失敗：'+e.message.slice(0,80));
+    resC.innerHTML = '<span style="color:var(--accent3)">'+msg+'</span>';
     btn.innerHTML = 'AI 分析'; btn.disabled = false; btn.onclick = analyzeFood;
   }
 }
@@ -656,7 +674,7 @@ async function analyzeExercise(){
     const raw = await callGemini(
       `你是專業運動生理師，估算運動熱量消耗。體重預設81kg女性。
 只回傳JSON無markdown：{"activities":[{"name":"名稱","duration":分鐘,"kcal":消耗,"intensity":"低/中/高"}],"total_kcal":數字,"total_minutes":數字,"summary":"一句話"}`,
-      '估算：'+text, 800);
+      '估算：'+text, 800, true);
     const parsed = JSON.parse(raw.replace(/```json|```/g,'').trim());
     pendingEx = { parsed, text };
     let html = '<div style="margin-bottom:8px">';
@@ -676,7 +694,8 @@ async function analyzeExercise(){
     btn.disabled = false;
     btn.onclick = confirmExercise;
   } catch(e){
-    resC.innerHTML = '<span style="color:var(--accent3)">估算失敗，請重試</span>';
+    const msg = e.message==='NO_KEY'?'請先到設定填入 API Key':(e.message.startsWith('API')||e.message.includes('Key')||e.message.includes('網路')||e.message.includes('用量')||e.message.includes('AI')?e.message:'解析失敗：'+e.message.slice(0,80));
+    resC.innerHTML = '<span style="color:var(--accent3)">'+msg+'</span>';
     btn.innerHTML = 'AI 估算消耗'; btn.disabled = false; btn.onclick = analyzeExercise;
   }
 }
@@ -854,7 +873,7 @@ async function fetchAdvice(summary, role, elId){
     const txt = await callGemini(prompts[role], summary, 500);
     document.getElementById(elId).textContent = txt||'分析失敗';
   } catch(e){
-    const msg = e.message==='NO_KEY'?'請先到設定填入 API Key':'連線失敗，請檢查 API Key 是否正確';
+    const msg = e.message==='NO_KEY'?'請先到設定填入 API Key':e.message;
     document.getElementById(elId).innerHTML='<span style="color:var(--accent3)">'+msg+'</span>';
   }
 }
