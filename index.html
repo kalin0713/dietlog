@@ -354,7 +354,9 @@ svg.ring{transform:rotate(-90deg);}
 <div class="overlay" id="settingsModal" onclick="closeModal('settingsModal')">
   <div class="modal" onclick="event.stopPropagation()">
     <div class="modal-handle"></div>
-    <div class="modal-title">⚙ 每日目標設定</div>
+    <div class="modal-title">⚙ 設定</div>
+
+    <div class="analysis-title" style="margin-bottom:10px">每日目標</div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">熱量 (kcal)</label><input class="form-input" id="sKcal" type="number" placeholder="1450"/></div>
       <div class="form-group"><label class="form-label">喝水（杯）</label><input class="form-input" id="sWater" type="number" placeholder="8"/></div>
@@ -364,12 +366,37 @@ svg.ring{transform:rotate(-90deg);}
       <div class="form-group"><label class="form-label">碳水 (g)</label><input class="form-input" id="sCarb" type="number" placeholder="105"/></div>
       <div class="form-group"><label class="form-label">脂肪 (g)</label><input class="form-input" id="sFat" type="number" placeholder="48"/></div>
     </div>
-    <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:4px;font-size:12px;color:var(--muted);line-height:1.7">
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px;color:var(--muted);line-height:1.7">
       💡 <strong style="color:var(--text)">你的設定（33歲女 81kg）</strong><br>
       · 建議熱量：1,450 kcal（TDEE赤字20%）<br>
       · 蛋白質：145g（體重×1.8，保肌關鍵）<br>
       · 碳水：105g / 脂肪：48g
     </div>
+
+    <div class="divider"></div>
+
+    <div class="analysis-title" style="margin-bottom:10px">🤖 AI 功能（Gemini 免費版）</div>
+    <div class="form-group">
+      <label class="form-label">Gemini API Key</label>
+      <input class="form-input" id="sApiKey" type="password" placeholder="AIza..." autocomplete="off"/>
+    </div>
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px;color:var(--muted);line-height:1.7">
+      🔑 <strong style="color:var(--text)">如何取得免費 Key</strong><br>
+      · 前往 <span style="color:var(--accent)">aistudio.google.com/apikey</span><br>
+      · 用 Google 帳號登入 → Create API key<br>
+      · 複製貼上（Key 只存你手機，不會外洩）<br>
+      · 每天免費 1,500 次請求
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="analysis-title" style="margin-bottom:10px">💾 資料備份</div>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <button class="analysis-btn abtn-secondary" style="margin:0;flex:1" onclick="exportData()">匯出備份</button>
+      <button class="analysis-btn abtn-secondary" style="margin:0;flex:1" onclick="document.getElementById('importFile').click()">匯入備份</button>
+      <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(event)"/>
+    </div>
+
     <button class="submit-btn" onclick="saveSettings()">儲存設定</button>
   </div>
 </div>
@@ -542,10 +569,32 @@ function addFoodManual(){
   s.meals.push({ id:Date.now(), mealType:selMealType, name, kcal, amount:amt, protein:prot, carb, fat });
   saveState(s); render(); closeModal('addModal'); clearFoodForm(); showToast('記錄成功 ✓');
 }
+// ===== GEMINI HELPER =====
+function getApiKey(){ return localStorage.getItem('dl_apikey')||''; }
+async function callGemini(systemPrompt, userMsg, maxTokens){
+  const key = getApiKey();
+  if(!key) throw new Error('NO_KEY');
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key='+encodeURIComponent(key);
+  const resp = await fetch(url,{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      systemInstruction:{ parts:[{ text:systemPrompt }] },
+      contents:[{ role:'user', parts:[{ text:userMsg }] }],
+      generationConfig:{ maxOutputTokens:maxTokens||1000, temperature:0.3 }
+    })
+  });
+  if(!resp.ok){
+    const err = await resp.text();
+    throw new Error('API_ERR: '+resp.status+' '+err.slice(0,200));
+  }
+  const data = await resp.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text||'';
+}
 // ===== AI FOOD =====
 async function analyzeFood(){
   const text = document.getElementById('aiText').value.trim();
   if(!text){ showToast('請描述你吃的食物'); return; }
+  if(!getApiKey()){ showToast('請先到設定填入 API Key'); return; }
   const btn = document.getElementById('aiAnalyzeBtn');
   const res = document.getElementById('aiResult');
   const resC = document.getElementById('aiResultContent');
@@ -554,18 +603,11 @@ async function analyzeFood(){
   res.className = 'ai-result show';
   resC.innerHTML = '分析中...';
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        model:'claude-sonnet-4-20250514', max_tokens:1000,
-        system:`你是專業營養分析師。用戶描述吃的食物，估算熱量和巨量營養素。
+    const raw = await callGemini(
+      `你是專業營養分析師。用戶描述吃的食物，估算熱量和巨量營養素。
 拳頭換算：1拳頭肉≈110g蛋白25g，1拳頭白飯≈110g碳水38g，1拳頭蔬菜≈100g，1拳頭水果≈100g。
-只回傳JSON無多餘文字：{"items":[{"name":"名稱","kcal":數字,"protein":數字,"carb":數字,"fat":數字,"unit":"份量描述"}],"total":{"kcal":數字,"protein":數字,"carb":數字,"fat":數字}}`,
-        messages:[{role:'user', content:'分析：'+text}]
-      })
-    });
-    const data = await resp.json();
-    const raw = data.content?.[0]?.text||'';
+只回傳JSON無多餘文字無markdown：{"items":[{"name":"名稱","kcal":數字,"protein":數字,"carb":數字,"fat":數字,"unit":"份量描述"}],"total":{"kcal":數字,"protein":數字,"carb":數字,"fat":數字}}`,
+      '分析：'+text, 1200);
     const parsed = JSON.parse(raw.replace(/```json|```/g,'').trim());
     pendingFood = { parsed, text };
     let html = '<div style="margin-bottom:8px">';
@@ -602,6 +644,7 @@ function confirmFood(){
 async function analyzeExercise(){
   const text = document.getElementById('exText').value.trim();
   if(!text){ showToast('請描述你做的運動'); return; }
+  if(!getApiKey()){ showToast('請先到設定填入 API Key'); return; }
   const btn = document.getElementById('exBtn');
   const res = document.getElementById('exResult');
   const resC = document.getElementById('exResultContent');
@@ -610,17 +653,10 @@ async function analyzeExercise(){
   res.className = 'ai-result show';
   resC.innerHTML = '估算中...';
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        model:'claude-sonnet-4-20250514', max_tokens:600,
-        system:`你是專業運動生理師，估算運動熱量消耗。體重預設81kg女性。
-只回傳JSON：{"activities":[{"name":"名稱","duration":分鐘,"kcal":消耗,"intensity":"低/中/高"}],"total_kcal":數字,"total_minutes":數字,"summary":"一句話"}`,
-        messages:[{role:'user', content:'估算：'+text}]
-      })
-    });
-    const data = await resp.json();
-    const raw = data.content?.[0]?.text||'';
+    const raw = await callGemini(
+      `你是專業運動生理師，估算運動熱量消耗。體重預設81kg女性。
+只回傳JSON無markdown：{"activities":[{"name":"名稱","duration":分鐘,"kcal":消耗,"intensity":"低/中/高"}],"total_kcal":數字,"total_minutes":數字,"summary":"一句話"}`,
+      '估算：'+text, 800);
     const parsed = JSON.parse(raw.replace(/```json|```/g,'').trim());
     pendingEx = { parsed, text };
     let html = '<div style="margin-bottom:8px">';
@@ -672,12 +708,58 @@ function openSettings(){
   document.getElementById('sCarb').value=g.carb;
   document.getElementById('sFat').value=g.fat;
   document.getElementById('sWater').value=g.water;
+  document.getElementById('sApiKey').value=getApiKey();
   openModal('settingsModal');
 }
 function saveSettings(){
   const g={ kcal:parseInt(document.getElementById('sKcal').value)||1450, protein:parseInt(document.getElementById('sProtein').value)||145, carb:parseInt(document.getElementById('sCarb').value)||105, fat:parseInt(document.getElementById('sFat').value)||48, water:parseInt(document.getElementById('sWater').value)||8 };
   localStorage.setItem('dl_goals',JSON.stringify(g));
+  const key=document.getElementById('sApiKey').value.trim();
+  if(key) localStorage.setItem('dl_apikey',key);
+  else localStorage.removeItem('dl_apikey');
   render(); closeModal('settingsModal'); showToast('設定已儲存 ✓');
+}
+// ===== EXPORT / IMPORT =====
+function exportData(){
+  const data={ exportedAt:new Date().toISOString(), version:1, goals:getGoals(), weight:getWeightLog(), days:{} };
+  for(let i=0;i<localStorage.length;i++){
+    const k=localStorage.key(i);
+    if(k && k.startsWith('dl_') && /^dl_\d{4}-\d{2}-\d{2}$/.test(k)){
+      data.days[k.slice(3)] = JSON.parse(localStorage.getItem(k));
+    }
+  }
+  const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'dietlog-backup-'+dateKey(new Date())+'.json';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('已匯出備份 ✓');
+}
+function importData(ev){
+  const file = ev.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e){
+    try {
+      const data = JSON.parse(e.target.result);
+      if(!data.days && !data.weight && !data.goals){ showToast('檔案格式錯誤'); return; }
+      if(!confirm('確定匯入備份？將覆蓋目前所有資料。')) return;
+      if(data.goals) localStorage.setItem('dl_goals',JSON.stringify(data.goals));
+      if(data.weight) localStorage.setItem('dl_weight',JSON.stringify(data.weight));
+      if(data.days){
+        Object.keys(data.days).forEach(date=>{
+          localStorage.setItem('dl_'+date, JSON.stringify(data.days[date]));
+        });
+      }
+      render(); renderWeight(); closeModal('settingsModal'); showToast('匯入成功 ✓');
+    } catch(err){
+      showToast('匯入失敗：檔案損毀');
+    }
+  };
+  reader.readAsText(file);
+  ev.target.value='';
 }
 // ===== ANALYSIS =====
 function getMissing(){
@@ -764,15 +846,16 @@ async function fetchAdvice(summary, role, elId){
 3. 今日蛋白或熱量有問題時，說明對肌肉保留的影響
 用繁體中文，每點用 · 開頭，不超過180字，建議要現實可執行。`
   };
+  if(!getApiKey()){
+    document.getElementById(elId).innerHTML='<span style="color:var(--warning)">請先到設定填入 Gemini API Key</span>';
+    return;
+  }
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:400, system:prompts[role], messages:[{role:'user',content:summary}] })
-    });
-    const data = await resp.json();
-    document.getElementById(elId).textContent = data.content?.[0]?.text||'分析失敗';
+    const txt = await callGemini(prompts[role], summary, 500);
+    document.getElementById(elId).textContent = txt||'分析失敗';
   } catch(e){
-    document.getElementById(elId).innerHTML='<span style="color:var(--accent3)">連線失敗，請重試</span>';
+    const msg = e.message==='NO_KEY'?'請先到設定填入 API Key':'連線失敗，請檢查 API Key 是否正確';
+    document.getElementById(elId).innerHTML='<span style="color:var(--accent3)">'+msg+'</span>';
   }
 }
 // ===== WEIGHT =====
